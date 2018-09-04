@@ -1,0 +1,186 @@
+//Created by Siyi Wang on 12.10.2017
+#include <iostream>
+#include <iomanip>
+#include <cmath>
+#include <fstream>
+#include <cstdlib>
+#include <algorithm>
+#include <stdlib.h>
+#include <time.h>
+#include <random>
+#include "normdist.h"
+
+using namespace std;
+double risk_free_rate, initial_stock_price, expiration_time, volatility;
+double up_factor, uptick_prob, strike_price,R, barrier_price;
+int no_of_trials,no_of_barriers;
+
+//On windows computer, if I use (((double) rand())/RAND_MAX)) to generate uniformly distributed random number, the result will exist number like 1.#INF
+//So I use the following way, the result of prices can be a little bit different,
+//however it's close to the example provided by the professor, at least in terms to the two decimal places
+default_random_engine generator;
+double get_uniform()
+{
+    std::uniform_real_distribution <double> distribution(0.0,1.0);
+    double number = distribution(generator);
+    return (number);
+}
+// I also try to run my code on MAC, I use the following way and get very similar result as the professor did
+/*double get_uniform()
+{
+	return ((double) random())/(pow(2.0, 31.0)-1.0); 
+}*/
+
+double max(double a, double b) {
+	return (b < a )? a:b;
+}
+
+double N(const double& z) { 
+	if (z > 6.0) { return 1.0; }; // this guards against overflow 
+	if (z < -6.0) { return 0.0; }; 
+	double b1 = 0.31938153; 
+	double b2 = -0.356563782; 
+	double b3 = 1.781477937; 
+	double b4 = -1.821255978; 
+	double b5 = 1.330274429; 
+	double p = 0.2316419; 
+	double c2 = 0.3989423; 
+	double a=fabs(z); 
+	double t = 1.0/(1.0+a*p); 
+	double b = c2*exp((-z)*(z/2.0)); 
+	double n = ((((b5*t+b4)*t+b3)*t+b2)*t+b1)*t; 
+	n = 1.0-b*n; 
+	if ( z < 0.0 ) n = 1.0 - n; 
+	return n; 
+}
+
+// use brownian nridge to calculate the probability for not be knocked out at each barrier 
+double discount_prob(double Sti,double Ti, double St)
+{
+	if(Sti<barrier_price)
+		return 0.0;
+	else
+	{
+		double mu=initial_stock_price+(Ti/expiration_time)*(St-initial_stock_price);
+		double sigma2=(Ti*(expiration_time-Ti))/expiration_time;
+	return (1-N((barrier_price-mu)/(sqrt(sigma2))));
+	}
+}
+
+int main (int argc, char* argv[])
+{
+	
+	sscanf_s (argv[1], "%lf", &expiration_time);
+	sscanf_s (argv[2], "%lf", &risk_free_rate);
+	sscanf_s (argv[3], "%lf", &volatility);
+	sscanf_s (argv[4], "%lf", &initial_stock_price);
+	sscanf_s (argv[5], "%lf", &strike_price);
+	sscanf_s (argv[6], "%d", &no_of_trials);
+	sscanf_s (argv[7], "%d", &no_of_barriers);
+	sscanf_s (argv[8], "%lf", &barrier_price);
+	
+	double delta_T = expiration_time/((double)no_of_barriers);
+	double delta_R = (risk_free_rate - 0.5*pow(volatility,2))*delta_T;
+	double delta_SD = volatility*sqrt(delta_T); 
+	double **simulated_price=new double*[no_of_barriers+1];//I use this array to store my simulated price paths
+	double **P=new double*[no_of_barriers+1];//I use this array to store the probability of four srock prices paths that do not touch the barrier at each barrier
+	double Pd[4];//I use this array to store the probaility that four price paths never touch barriers
+    double call_price_use_explicit_way=0.0;
+	double put_price_use_explicit_way=0.0;
+	double call_price_use_probability_discount=0.0;
+	double put_price_use_probability_discount=0.0;
+	bool breach_or_not[4];//I use this array to mark whether a price path touch the barrier or not for the explicit way
+	double call_payoff[4],put_payoff[4],call_payoff_use_prob[4],put_payoff_use_prob[4];
+	//initialize the variable
+	clock_t st,en1,en2;
+	st=clock();
+	for(int n=0;n<=no_of_barriers;n++)
+	{
+		simulated_price[n]=new double[4];
+		P[n]=new double[4];
+	}
+	//set each price path's first value equals to the initial price
+	//set all the price paths that not breach barriers yet
+	for(int p=0;p<no_of_trials;p++)
+	{
+		for(int k=0;k<4;k++)
+		{
+		simulated_price[0][k]= initial_stock_price;
+		breach_or_not[k]=0;
+		Pd[k]=1;
+		}
+		//simulation
+	for(int n=1;n<=no_of_barriers;n++)
+	{
+	   double x = get_uniform();
+	   double y = get_uniform();
+	   double a =  sqrt(-2.0*log(x)) * cos(6.283185307999998*y);
+	   double b =  sqrt(-2.0*log(x)) * sin(6.283185307999998*y);
+		simulated_price[n][0] =simulated_price[n-1][0]*exp(delta_R + delta_SD*a);
+		simulated_price[n][1] =simulated_price[n-1][1]*exp(delta_R - delta_SD*a);
+		simulated_price[n][2]=simulated_price[n-1][2]*exp(delta_R + delta_SD*b);
+		simulated_price[n][3]=simulated_price[n-1][3]*exp(delta_R - delta_SD*b);
+		for(int m=0;m<4;m++)
+		{
+	    if(simulated_price[n][m]<=barrier_price) 
+			breach_or_not[m]=1;//for explicit way, I marked the breached paths 1, I will use that to knock out these paths later 
+		P[n][m]=discount_prob(simulated_price[n][m],delta_T*n,simulated_price[no_of_barriers][m]);
+		}
+		Pd[0]=P[n][0]*Pd[0];//multiply the probability of not touch the barrier for each price paths 
+		Pd[1]=P[n][1]*Pd[1];
+		Pd[2]=P[n][2]*Pd[2];
+		Pd[3]=P[n][3]*Pd[3];
+	}
+
+	for(int i=0;i<4;i++)
+	{
+		if(breach_or_not[i]==1)//check whether touch the barrier
+		{
+			put_payoff[i]=0;
+            call_payoff[i]=0;
+		}
+		else
+		{
+			put_payoff[i]=max(0.0, strike_price - simulated_price[no_of_barriers][i]);
+            call_payoff[i]=max(0.0, simulated_price[no_of_barriers][i] - strike_price);
+		}
+		put_payoff_use_prob[i]=max(0.0, strike_price - simulated_price[no_of_barriers][i])*Pd[i];//use brownian bridge probability to discount price
+       call_payoff_use_prob[i]=max(0.0, simulated_price[no_of_barriers][i] - strike_price)*Pd[i];
+	}
+	// add all simulation prices for options
+	call_price_use_explicit_way+= ((call_payoff[0]+call_payoff[1]+call_payoff[2]+call_payoff[3])/4.0);	
+	put_price_use_explicit_way+= ((put_payoff[0]+put_payoff[1]+put_payoff[2]+put_payoff[3])/4.0);
+	call_price_use_probability_discount+=((call_payoff_use_prob[0]+call_payoff_use_prob[1]+call_payoff_use_prob[2]+call_payoff_use_prob[3])/4.0);
+	put_price_use_probability_discount+=((put_payoff_use_prob[0]+put_payoff_use_prob[1]+put_payoff_use_prob[2]+put_payoff_use_prob[3])/4.0);
+	}
+	//get the average value
+	call_price_use_explicit_way=call_price_use_explicit_way*exp(-risk_free_rate*expiration_time)/no_of_trials;
+	en1= clock();
+	put_price_use_explicit_way=put_price_use_explicit_way*exp(-risk_free_rate*expiration_time)/no_of_trials;
+	call_price_use_probability_discount=call_price_use_probability_discount*exp(-risk_free_rate*expiration_time)/no_of_trials;
+	en2= clock();
+	put_price_use_probability_discount=put_price_use_probability_discount*exp(-risk_free_rate*expiration_time)/no_of_trials;
+
+	cout << "European Down and Out Discrete Barrier Option Pricing" << endl;
+	cout << "Expiration Time (Years) = " << expiration_time << endl;
+	cout << "Risk Free Interest Rate = " << risk_free_rate << endl;
+	cout << "Volatility (%age of stock value) = " << volatility*100 << endl;
+	cout << "Initial Stock Price = " << initial_stock_price << endl;
+	cout << "Strike Price = " << strike_price << endl;
+	cout << "Number of Trials = " << no_of_trials << endl;
+	cout << "Barrier Price = " << barrier_price << endl; 
+	cout << "Number of Barriers = " << no_of_barriers << endl;
+	cout << "--------------------------------------" << endl;
+	cout<<"The average Call Price by explict simulation is:"<<call_price_use_explicit_way<<endl;
+    cout << "The Call Price using Brownian Bridge adjustment is = " << call_price_use_probability_discount<< endl;
+	cout << "--------------------------------------" << endl;
+	cout<<"The average Put Price by explict simulation is:"<<put_price_use_explicit_way<<endl;
+	cout << "The Put Price using Brownian Bridge adjustment is = "<< put_price_use_probability_discount<< endl;
+	cout << "--------------------------------------" << endl;
+		 long double diff2=((long double)en1-(long double)st);
+	long double t1=diff2/CLOCKS_PER_SEC;
+	 long double diff=((long double)en2-(long double)st);
+	long double t2=diff/CLOCKS_PER_SEC;
+	cout<<"explicit"<<t1<<endl;
+	cout<<"brownian"<<t2<<endl;
+}
